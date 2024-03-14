@@ -1,84 +1,79 @@
-// Copyright 2023 TiKV Project Authors. Licensed under Apache-2.0.
+//! Tools for concurrent programming.
+//!
+//! ## Atomics
+//!
+//! * [`AtomicCell`], a thread-safe mutable memory location.
+//! * [`AtomicConsume`], for reading from primitive atomic types with "consume" ordering.
+//!
+//! ## Data structures
+//!
+//! * [`deque`], work-stealing deques for building task schedulers.
+//! * [`ArrayQueue`], a bounded MPMC queue that allocates a fixed-capacity buffer on construction.
+//! * [`SegQueue`], an unbounded MPMC queue that allocates small buffers, segments, on demand.
+//!
+//! ## Memory management
+//!
+//! * [`epoch`], an epoch-based garbage collector.
+//!
+//! ## Thread synchronization
+//!
+//! * [`channel`], multi-producer multi-consumer channels for message passing.
+//! * [`Parker`], a thread parking primitive.
+//! * [`ShardedLock`], a sharded reader-writer lock with fast concurrent reads.
+//! * [`WaitGroup`], for synchronizing the beginning or end of some computation.
+//!
+//! ## Utilities
+//!
+//! * [`Backoff`], for exponential backoff in spin loops.
+//! * [`CachePadded`], for padding and aligning a value to the length of a cache line.
+//! * [`scope`], for spawning threads that borrow local variables from the stack.
+//!
+//! [`AtomicCell`]: atomic::AtomicCell
+//! [`AtomicConsume`]: atomic::AtomicConsume
+//! [`ArrayQueue`]: queue::ArrayQueue
+//! [`SegQueue`]: queue::SegQueue
+//! [`Parker`]: sync::Parker
+//! [`ShardedLock`]: sync::ShardedLock
+//! [`WaitGroup`]: sync::WaitGroup
+//! [`Backoff`]: utils::Backoff
+//! [`CachePadded`]: utils::CachePadded
 
-#![feature(slice_pattern)]
-#![feature(let_chains)]
+#![no_std]
+#![doc(test(
+    no_crate_inject,
+    attr(
+        deny(warnings, rust_2018_idioms, single_use_lifetimes),
+        allow(dead_code, unused_assignments, unused_variables)
+    )
+))]
+#![warn(missing_docs, unsafe_op_in_unsafe_fn)]
 
-mod arena;
-mod key;
-mod list;
-mod memory_control;
+#[cfg(feature = "std")]
+extern crate std;
 
-pub use key::{ByteWiseComparator, FixedLengthSuffixComparator, KeyComparator};
-pub use list::{IterRef, Node, Skiplist};
-pub use memory_control::{AllocationRecorder, MemoryLimiter, RecorderLimiter};
+pub use crossbeam_utils::atomic;
 
-use tikv_jemalloc_ctl::{epoch, stats, Error};
+pub mod utils {
+    //! Miscellaneous utilities.
+    //!
+    //! * [`Backoff`], for exponential backoff in spin loops.
+    //! * [`CachePadded`], for padding and aligning a value to the length of a cache line.
 
-pub type AllocStats = Vec<(&'static str, usize)>;
-
-pub fn fetch_stats() -> Result<Option<AllocStats>, Error> {
-    // Stats are cached. Need to advance epoch to refresh.
-    epoch::advance()?;
-
-    Ok(Some(vec![
-        ("allocated", stats::allocated::read()?),
-        ("active", stats::active::read()?),
-        ("metadata", stats::metadata::read()?),
-        ("resident", stats::resident::read()?),
-        ("mapped", stats::mapped::read()?),
-        ("retained", stats::retained::read()?),
-        // (
-        //     "dirty",
-        //     stats::resident::read()? - stats::active::read()? - stats::metadata::read()?,
-        // ),
-        (
-            "fragmentation",
-            stats::active::read()? - stats::allocated::read()?,
-        ),
-    ]))
+    pub use crossbeam_utils::Backoff;
+    pub use crossbeam_utils::CachePadded;
 }
 
-pub struct ReadableSize(pub u64);
-const BINARY_DATA_MAGNITUDE: u64 = 1024;
-pub const B: u64 = 1;
-pub const KIB: u64 = B * BINARY_DATA_MAGNITUDE;
-pub const MIB: u64 = KIB * BINARY_DATA_MAGNITUDE;
-pub const GIB: u64 = MIB * BINARY_DATA_MAGNITUDE;
-pub const TIB: u64 = GIB * BINARY_DATA_MAGNITUDE;
-pub const PIB: u64 = TIB * BINARY_DATA_MAGNITUDE;
+#[cfg(feature = "alloc")]
+#[doc(inline)]
+pub use {crossbeam_epoch as epoch, crossbeam_queue as queue};
 
-impl ReadableSize {
-    pub const fn kb(count: u64) -> ReadableSize {
-        ReadableSize(count * KIB)
-    }
+#[cfg(feature = "std")]
+#[doc(inline)]
+pub use {
+    crossbeam_channel as channel, crossbeam_channel::select, crossbeam_deque as deque,
+    crossbeam_utils::sync,
+};
 
-    pub const fn mb(count: u64) -> ReadableSize {
-        ReadableSize(count * MIB)
-    }
-
-    pub const fn gb(count: u64) -> ReadableSize {
-        ReadableSize(count * GIB)
-    }
-
-    pub const fn as_mb(self) -> u64 {
-        self.0 / MIB
-    }
-
-    pub const fn as_kb(self) -> u64 {
-        self.0 / KIB
-    }
-
-    pub fn as_mb_f64(self) -> f64 {
-        self.0 as f64 / MIB as f64
-    }
-}
-
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-pub enum Bound<T> {
-    /// An inclusive bound.
-    Included(T),
-    /// An exclusive bound.
-    Excluded(T),
-    /// An infinite endpoint. Indicates that there is no bound in this direction.
-    Unbounded,
-}
+#[cfg(feature = "std")]
+#[cfg(not(crossbeam_loom))]
+pub use crossbeam_utils::thread::{self, scope};
